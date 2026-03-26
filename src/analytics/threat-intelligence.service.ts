@@ -347,7 +347,7 @@ export class ThreatIntelligenceService {
       summary += `🔴 **CRITICAL**: ${criticalAlerts.length} serious security issue(s) discovered.\n\n`;
     }
 
-    summary += `📊 **This Week**: ${trendingAlerts.length} new vulnerabilities disclosed.\n\n`;
+    summary += `📊 **This Week**: Several new vulnerabilities disclosed.\n\n`;
 
     summary += '**What to do:**\n';
     summary += '1. Check if you use any software mentioned in the threats\n';
