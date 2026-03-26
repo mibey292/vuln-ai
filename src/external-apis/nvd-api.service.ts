@@ -86,15 +86,25 @@ export class NvdApiService {
 
     try {
       this.logger.log(`Fetching CVEs for product: ${productName}`);
+      // Use keyword search which works better for product names
       const response = await this.apiClient.get(``, {
         params: {
-          cpeName: `cpe:2.3:*:*:${productName}:*:*:*:*:*:*:*:*`,
-          resultsPerPage: limit,
+          keywordSearch: productName,
+          resultsPerPage: Math.min(limit * 2, 100), // Get more results to filter
         },
       });
 
       const cves = (response.data?.vulnerabilities || [])
         .map((vuln: any) => this.parseNvdVulnerability(vuln))
+        .filter((cve: CVEDto) => {
+          // Filter to products that contain the search term
+          const combinedText = [
+            cve.description,
+            cve.affectedProducts?.join(' '),
+            cve.id,
+          ].join(' ').toLowerCase();
+          return combinedText.includes(productName.toLowerCase());
+        })
         .slice(0, limit);
 
       this.cache.set(cacheKey, cves);

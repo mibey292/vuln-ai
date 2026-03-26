@@ -889,7 +889,7 @@ Type "help" for detailed information about all available commands, or just ask y
     }
 
     // Check if last message ended with a follow-up suggestion
-    const followUpMatch = lastAssistantMessage.match(/💡 Next: (.+?)\?/i);
+    const followUpMatch = (lastAssistantMessage as string).match(/💡 Next: (.+?)\?/i);
     if (!followUpMatch) {
       return null;
     }
