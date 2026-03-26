@@ -876,7 +876,7 @@ Type "help" for detailed information about all available commands, or just ask y
     const history = this.conversationContext.get(sessionId) || [];
     
     // Find the last assistant message
-    let lastAssistantMessage = null;
+    let lastAssistantMessage: string | null = null;
     for (let i = history.length - 1; i >= 0; i--) {
       if (history[i].role === 'assistant') {
         lastAssistantMessage = history[i].content;
