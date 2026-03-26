@@ -12,7 +12,8 @@ async function bootstrap() {
   // Enable CORS for frontend communication
   const allowedOrigins = [
     'http://localhost:5173',
-    'vuln-ai.geniushackers.guru',
+    'https://vuln-ai.geniushackers.guru',
+    'http://vuln-ai.geniushackers.guru',
     process.env.CORS_ORIGIN,
   ].filter(Boolean);
 
