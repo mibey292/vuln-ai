@@ -1,0 +1,53 @@
+import * as dotenv from 'dotenv';
+import { NestFactory } from '@nestjs/core';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { AppModule } from './app.module';
+
+// Load environment variables at the very start
+dotenv.config();
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // Enable CORS for frontend communication
+  app.enableCors({
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
+
+  // Setup Swagger documentation
+  const config = new DocumentBuilder()
+    .setTitle('VulnAI - Cybersecurity Vulnerability Analysis')
+    .setDescription(
+      'AI-powered vulnerability analysis and security recommendations. Analyze CVEs from NVD, GitHub Security Advisories, and CISA using intelligent threat detection and risk assessment.',
+    )
+    .setVersion('1.0.0')
+    .addTag(
+      'Security Analysis',
+      'Analyze vulnerabilities, threats, and get security recommendations',
+    )
+    .setContact(
+      'VulnAI Support',
+      'https://github.com/colki/vulnai',
+      'support@vulnai.dev',
+    )
+    .setLicense('UNLICENSED', 'https://github.com/colki/vulnai')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+    customCss: `.topbar { display: none !important; }`,
+  });
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port);
+  console.log(`VulnAI Server running on http://localhost:${port}`);
+  console.log(`Swagger documentation available at http://localhost:${port}/api`);
+}
+
+bootstrap();
