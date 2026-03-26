@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { BreachCheckService } from '../external-apis/breach-check.service';
 import { EmailValidationService } from '../external-apis/email-validation.service';
 import { WebsiteAnalysisService } from '../external-apis/website-analysis.service';
+import { MaliciousSiteDetectionService } from '../external-apis/malicious-site-detection.service';
 import { ThreatIntelligenceService } from '../analytics/threat-intelligence.service';
 
 @ApiTags('Security Analysis')
@@ -16,6 +17,7 @@ export class ChatbotController {
     private readonly breachCheckService: BreachCheckService,
     private readonly emailValidationService: EmailValidationService,
     private readonly websiteAnalysisService: WebsiteAnalysisService,
+    private readonly maliciousSiteDetection: MaliciousSiteDetectionService,
     private readonly threatIntelligenceService: ThreatIntelligenceService,
   ) {}
 
@@ -361,5 +363,131 @@ Session Management:
     }>;
   }> {
     return this.threatIntelligenceService.getThreatIntelligenceFeed();
+  }
+
+  @Post('check-email-links')
+  @ApiOperation({
+    summary: 'Check email content for malicious links',
+    description:
+      'Analyze email content for malicious/phishing links using URLhaus threat database. Detects links that Google Safe Browsing may miss.',
+  })
+  @ApiBody({
+    schema: {
+      example: {
+        subject: 'Quick update from the team',
+        content:
+          '<p>Hey there!</p><p>Just wanted to reach out and share some updates... <a href="https://malicious-site.com">Click here to verify your account</a></p>',
+        recipients: ['user@example.com'],
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Email link security analysis',
+    schema: {
+      example: {
+        subject: 'Quick update from the team',
+        hasLinks: true,
+        maliciousLinksFound: 1,
+        overallRisk: 'dangerous',
+        plainLanguageSummary: '🚨 DANGER: This email contains known malicious links. DO NOT CLICK ANY LINKS.',
+        linksAnalysis: [
+          {
+            url: 'https://malicious-site.com',
+            isMalicious: true,
+            threat: 'malware',
+            description: 'This URL is in URLhaus threat database as malware',
+            confidence: 'high',
+            action: 'DO NOT CLICK - Report sender immediately',
+          },
+        ],
+        recommendations: [
+          '🚨 Do not click any links in this email',
+          '🚨 Do not download attachments from this sender',
+          'Report the email as phishing to your email provider',
+          'If from a trusted source, notify them their account may be compromised',
+          'Check your account security if you already clicked the link',
+        ],
+      },
+    },
+  })
+  async checkEmailLinks(
+    @Body()
+    body: {
+      subject: string;
+      content: string;
+      recipients?: string[];
+    },
+  ): Promise<{
+    subject: string;
+    hasLinks: boolean;
+    maliciousLinksFound: number;
+    overallRisk: 'safe' | 'moderate' | 'suspicious' | 'dangerous';
+    plainLanguageSummary: string;
+    linksAnalysis: Array<{
+      url: string;
+      isMalicious: boolean;
+      threat?: string;
+      description: string;
+      confidence: string;
+      action: string;
+    }>;
+    recommendations: string[];
+  }> {
+    // Extract and check all links from the content
+    const linksAnalysis = await this.maliciousSiteDetection.checkLinksInContent(
+      body.content,
+    );
+
+    const maliciousLinks = linksAnalysis.filter(link => link.isMalicious);
+    const totalLinks = linksAnalysis.length;
+
+    let overallRisk: 'safe' | 'moderate' | 'suspicious' | 'dangerous' = 'safe';
+    let plainLanguageSummary = '';
+
+    if (maliciousLinks.length > 0) {
+      overallRisk = 'dangerous';
+      plainLanguageSummary = `🚨 DANGER: This email contains ${maliciousLinks.length} known malicious link(s). DO NOT CLICK ANY LINKS.`;
+    } else if (totalLinks > 0) {
+      overallRisk = 'safe';
+      plainLanguageSummary =
+        '✅ No malicious links detected in this email. The links appear safe (based on URLhaus database).';
+    } else {
+      plainLanguageSummary = '✅ No links found in this email.';
+    }
+
+    return {
+      subject: body.subject,
+      hasLinks: totalLinks > 0,
+      maliciousLinksFound: maliciousLinks.length,
+      overallRisk,
+      plainLanguageSummary,
+      linksAnalysis: linksAnalysis.map(analysis => ({
+        url: analysis.url,
+        isMalicious: analysis.isMalicious,
+        threat: analysis.threat?.type,
+        description: analysis.isMalicious
+          ? `🚨 This URL is in ${analysis.detector} threat database as ${analysis.threat?.type || 'malware'}`
+          : `✅ This URL is not in known threat databases (${analysis.detector})`,
+        confidence: analysis.confidence,
+        action: analysis.isMalicious
+          ? '🚨 DO NOT CLICK - Report sender immediately'
+          : '✅ Safe to click (but verify sender authenticity)',
+      })),
+      recommendations: maliciousLinks.length > 0
+        ? [
+            '🚨 Do not click any links in this email',
+            '🚨 Do not download attachments from this sender',
+            'Report the email as phishing to your email provider',
+            `If from a trusted account, notify them immediately - their account is compromised`,
+            'Scan your computer for malware if you already clicked any links',
+            `URLhaus Threat Detection: ${maliciousLinks.length} malicious link(s) found`,
+          ]
+        : [
+            '✅ Email links appear safe based on current threat databases',
+            '⚠️ Still verify sender authenticity and use caution',
+            'Do not input sensitive information unless you verify the request',
+          ],
+    };
   }
 }

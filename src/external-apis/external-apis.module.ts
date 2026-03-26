@@ -5,6 +5,7 @@ import { CisaApiService } from './cisa-api.service';
 import { BreachCheckService } from './breach-check.service';
 import { EmailValidationService } from './email-validation.service';
 import { WebsiteAnalysisService } from './website-analysis.service';
+import { MaliciousSiteDetectionService } from './malicious-site-detection.service';
 
 @Module({
   providers: [
@@ -14,6 +15,7 @@ import { WebsiteAnalysisService } from './website-analysis.service';
     BreachCheckService,
     EmailValidationService,
     WebsiteAnalysisService,
+    MaliciousSiteDetectionService,
   ],
   exports: [
     NvdApiService,
@@ -22,6 +24,7 @@ import { WebsiteAnalysisService } from './website-analysis.service';
     BreachCheckService,
     EmailValidationService,
     WebsiteAnalysisService,
+    MaliciousSiteDetectionService,
   ],
 })
 export class ExternalApisModule {}

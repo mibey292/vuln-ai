@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
+import { MaliciousSiteDetectionService } from './malicious-site-detection.service';
 
 export interface WebsiteSecurityAnalysis {
   url: string;
@@ -11,12 +12,16 @@ export interface WebsiteSecurityAnalysis {
   securityHeaders: Record<string, string>;
   suspiciousIndicators: string[];
   riskLevel: 'safe' | 'moderate' | 'suspicious' | 'dangerous';
+  isMalicious?: boolean;
+  maliciousThreat?: string;
   recommendations: string[];
 }
 
 @Injectable()
 export class WebsiteAnalysisService {
   private readonly logger = new Logger(WebsiteAnalysisService.name);
+
+  constructor(private readonly maliciousSiteDetection: MaliciousSiteDetectionService) {}
 
   async analyzeWebsite(url: string): Promise<WebsiteSecurityAnalysis> {
     this.logger.log(`Analyzing website: ${url}`);
@@ -30,6 +35,39 @@ export class WebsiteAnalysisService {
 
       const urlObj = new URL(normalizedUrl);
       const domain = urlObj.hostname;
+
+      // Check if URL is known malicious (URLhaus)
+      const maliciousCheckResult = await this.maliciousSiteDetection.checkUrl(normalizedUrl);
+
+      // If it's known malicious, return immediately with high-severity warning
+      if (maliciousCheckResult.isMalicious) {
+        this.logger.warn(`⚠️ MALICIOUS SITE DETECTED: ${domain}`);
+        return {
+          url: normalizedUrl,
+          isReachable: true,
+          hasSSL: false,
+          sslGrade: 'F',
+          redirectChain: [],
+          securityHeaders: {},
+          suspiciousIndicators: [
+            `🚨 KNOWN MALICIOUS SITE - ${maliciousCheckResult.threat?.type || 'malware'}`,
+            `Threat Type: ${maliciousCheckResult.threat?.type || 'unknown'}`,
+            `Status: ${maliciousCheckResult.threat?.status || 'Active threat'}`,
+            'This URL/domain is in known malware/phishing databases',
+          ],
+          isMalicious: true,
+          maliciousThreat: maliciousCheckResult.threat?.type,
+          riskLevel: 'dangerous',
+          recommendations: [
+            '🚨 DO NOT CLICK THIS LINK',
+            '🚨 DO NOT DOWNLOAD ANYTHING FROM THIS SITE',
+            'This site is known to host malware or phishing content',
+            'Report this email/link to your email provider immediately',
+            'If this came from a trusted source, notify them their account may be compromised',
+            'URLhaus Detection: ' + (maliciousCheckResult.threat?.status || 'Known threat'),
+          ],
+        };
+      }
 
       // Check SSL/HTTPS
       const sslInfo = await this.checkSSL(urlObj);
@@ -58,6 +96,7 @@ export class WebsiteAnalysisService {
         securityHeaders: headers,
         suspiciousIndicators: suspicious,
         riskLevel,
+        isMalicious: false,
         recommendations,
       };
     } catch (error) {
