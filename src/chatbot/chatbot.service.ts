@@ -4,6 +4,7 @@ import { RealWorldVulnerabilityService } from '../vulnerability/real-world-vulne
 import { ThreatAnalyzerService } from '../analytics/threat-analyzer.service';
 import { RiskCalculatorService } from '../analytics/risk-calculator.service';
 import { LlmService } from '../llm/llm.service';
+import { EmailValidationService } from '../external-apis/email-validation.service';
 import { SecurityRecommendationDto } from '../vulnerability/dto/cve.dto';
 import NodeCache from 'node-cache';
 
@@ -19,6 +20,7 @@ export class ChatbotService {
     private readonly threatAnalyzer: ThreatAnalyzerService,
     private readonly riskCalculator: RiskCalculatorService,
     private readonly llmService: LlmService,
+    private readonly emailValidationService: EmailValidationService,
   ) {
     this.sessionCache = new NodeCache({ stdTTL: 1800, checkperiod: 600 });
   }
@@ -517,6 +519,78 @@ export class ChatbotService {
     this.logger.log(`Handling real-world scenario: ${scenario.type}`);
 
     try {
+      // Special handling for email_trust when a bare email/domain is provided (Gmail extension)
+      if (scenario.type === 'email_trust') {
+        const trimmedMessage = message.trim();
+        const isBareEmailOrDomain = 
+          /^[a-z0-9.-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(trimmedMessage) || 
+          (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(trimmedMessage) && !message.includes('/'));
+
+        if (isBareEmailOrDomain) {
+          try {
+            // Convert bare domain to email address if needed
+            let emailToCheck = trimmedMessage;
+            if (!emailToCheck.includes('@')) {
+              // For bare domains, use the domain itself as the identifier
+              emailToCheck = `support@${emailToCheck}`;
+            }
+            
+            this.logger.log(`Validating email sender: ${emailToCheck}`);
+            
+            const validation = await this.emailValidationService.validateEmailSender(emailToCheck);
+            
+            // Build a detailed response with validation results
+            let response = '';
+            
+            // Check if domain is in legitimate list for quick verdict
+            const legitimateDomains = ['google.com', 'amazon.com', 'github.com', 'microsoft.com', 'apple.com', 'facebook.com'];
+            const isLegitDomain = legitimateDomains.some(domain => validation.domain.toLowerCase().endsWith(domain));
+            
+            if (isLegitDomain || validation.suspicionLevel === 'safe') {
+              response = `✅ **Email Sender Appears Legitimate**\n\n`;
+              response += `**Domain:** ${validation.domain}\n`;
+              response += `**Valid Mail Server:** ${validation.hasMXRecords ? 'Yes ✓' : 'No ✗'}\n`;
+              response += `**Email Authentication (SPF):** ${validation.hasSpfRecord ? 'Yes ✓' : 'No ✗'}\n`;
+              response += `**Email Policy (DMARC):** ${validation.hasDmarcRecord ? 'Yes ✓' : 'No ✗'}\n\n`;
+              response += `This email domain appears to be legitimate and properly configured for email. It's generally safe to trust emails from this sender, but always verify unexpected requests.`;
+            } else if (validation.suspicionLevel === 'suspicious') {
+              response = `⚠️ **Email Sender Shows Some Red Flags**\n\n`;
+              response += `**Domain:** ${validation.domain}\n`;
+              response += `**Concerns:**\n`;
+              validation.reasons.forEach((reason) => {
+                response += `• ${reason}\n`;
+              });
+              response += `\n**Recommendations:**\n`;
+              validation.suggestions.forEach((suggestion) => {
+                response += `• ${suggestion}\n`;
+              });
+            } else {
+              response = `🚨 **Email Sender Appears Suspicious**\n\n`;
+              response += `**Domain:** ${validation.domain}\n`;
+              response += `**Red Flags:**\n`;
+              validation.reasons.forEach((reason) => {
+                response += `• ${reason}\n`;
+              });
+              response += `\n**What you should do:**\n`;
+              response += `• Do NOT reply with personal information\n`;
+              response += `• Do NOT click links in emails from this sender\n`;
+              response += `• Contact the company directly using a phone number from their official website\n`;
+              response += `${validation.suggestions.length > 0 ? '\n**Additional Steps:**\n' : ''}`;
+              validation.suggestions.forEach((suggestion) => {
+                response += `• ${suggestion}\n`;
+              });
+            }
+            
+            this.addToContext(sessionId, { role: 'assistant', content: response, timestamp: new Date() });
+            return response;
+          } catch (error) {
+            this.logger.warn(`Error validating email sender: ${error}`);
+            // Fall through to standard email_trust handling if validation fails
+          }
+        }
+      }
+
+      // Standard scenario handling
       // Get detailed CVE information for the related CVEs
       const cveDetails = await Promise.all(
         scenario.relatedCVEs.map((cveId: string) =>
