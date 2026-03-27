@@ -117,14 +117,16 @@ export class ChatbotService {
     // Extract CVE ID from message (e.g., CVE-2024-1234)
     const cveMatch = message.match(/CVE-\d{4}-\d{4,}/i);
     if (!cveMatch) {
-      return `Please provide a CVE ID (e.g., CVE-2024-1234)`;
+      return `Please provide a CVE ID in the format CVE-YYYY-NNNN (e.g., CVE-2024-1234 or CVE-2023-44487)`;
     }
 
     const cveId = cveMatch[0].toUpperCase();
+    this.logger.log(`Searching for CVE: ${cveId}`);
+    
     const cveData = await this.vulnerabilityService.getCVEDetails(cveId);
 
     if (!cveData) {
-      return `❌ **CVE Not Found**: Could not find details for ${cveId}`;
+      return `❌ **CVE Not Found**: No details found for **${cveId}** in the NVD database.\n\nThis could mean:\n• The CVE ID doesn't exist\n• It's a very recent CVE not yet in NVD\n• The format might be incorrect\n\nTry:\n• Searching for a product instead: "OpenSSL vulnerabilities"\n• Checking recent CVEs: "Recent vulnerabilities"\n• Or search for known exploited vulnerabilities: "Show exploited CVEs"`;
     }
 
     // Get recommendation from risk calculator
@@ -227,17 +229,19 @@ export class ChatbotService {
 
   private async handleProductVulnerability(sessionId: string, message: string): Promise<string> {
     // Extract product name - look for patterns like "product vulnerabilities" or "check product"
-    const productMatch = message.match(/(?:for|in|product\s+|check\s+|analyze\s+)?([a-zA-Z0-9\s._-]+?)(?:\s+(?:vulnerabilities|cves|vulns|bugs)|$)/i);
+    const productMatch = message.match(/(?:for|in|product\s+|check\s+|analyze\s+|(?:find|get|list|show|search)\s+)?([a-zA-Z0-9\s._-]+?)(?:\s+(?:vulnerabilities|cves|vulns|bugs)|$)/i);
     
     if (!productMatch || !productMatch[1].trim()) {
-      return `Please specify a product name (e.g., "OpenSSL vulnerabilities" or "Apache vulnerabilities")`;
+      return `Please specify a product name (e.g., "OpenSSL vulnerabilities", "Apache CVEs", "Nginx vulnerabilities")`;
     }
 
     const productName = productMatch[1].trim();
+    this.logger.log(`Searching for vulnerabilities in product: ${productName}`);
+    
     const vulnerabilities = await this.vulnerabilityService.getVulnerableProducts(productName, 10);
 
     if (vulnerabilities.length === 0) {
-      return `❌ **No vulnerabilities found** for product: ${productName}`;
+      return `❌ **No vulnerabilities found** for product: **${productName}**\n\nThis could mean:\n• The product name might not be in the database\n• The spelling might be different\n• There are no known vulnerabilities for this product\n\nTry:\n• Using alternative product name: "OpenSSL" instead of "OpenSSL vulnerabilities"\n• Searching for similar products\n• Using the specific CVE ID if you know it`;
     }
 
     let response = `🔍 **Vulnerabilities for ${productName}**\n\n`;
@@ -385,49 +389,63 @@ export class ChatbotService {
   }
 
   private async handleGeneralSecurityQuery(sessionId: string, message: string): Promise<string> {
-    // Search for vulnerabilities based on the message
-    const searchResults = await this.vulnerabilityService.searchVulnerabilities(message, 5);
+    // This is a catch-all for general security questions that don't match specific intents
+    // Try NVD search as a fallback, but prioritize LLM for general questions
+    
+    const history = this.getContextMessages(sessionId, 2);
 
-    if (searchResults.length === 0) {
-      // Use LLM to answer general security questions
-      const history = this.getContextMessages(sessionId, 2);
-      try {
-        const response = await this.llmService.generateSecurityResponse(
-          message,
-          'No specific CVE data matched your query. Please provide general cybersecurity guidance.',
-          history,
-        );
-        return response;
-      } catch (error) {
-        this.logger.error(`LLM generation failed: ${error}`);
-        return `**Search Results:** No vulnerabilities found matching your query "${message}".\n\nTry:\n• Searching for a specific CVE ID (e.g., "CVE-2024-1234")\n• Asking about a product (e.g., "OpenSSL vulnerabilities")\n• Type "help" for more options`;
+    // Check if user is asking a general security question or looking for vulnerabilities
+    const hasVulnKeywords = /vulnerability|cve|exploit|breach|threat|patch|update|security|risk/i.test(message);
+    
+    if (hasVulnKeywords) {
+      // Try searching vulnerabilities first
+      const searchResults = await this.vulnerabilityService.searchVulnerabilities(message, 5);
+
+      if (searchResults.length > 0) {
+        // Format search results for LLM
+        const resultsContext = searchResults
+          .map((r) => `- ${r.id} [${r.metrics?.cvssV31Severity}] CVSS: ${r.metrics?.cvssV31Score || 'N/A'}`)
+          .join('\n');
+
+        try {
+          const response = await this.llmService.generateSecurityResponse(
+            message,
+            `Matching CVEs found:\n${resultsContext}`,
+            history,
+          );
+          return response;
+        } catch (error) {
+          this.logger.error(`LLM generation failed, using template: ${error}`);
+          // Fallback to template
+          let response = `🔍 **Vulnerability Search Results**\n\n`;
+          searchResults.slice(0, 5).forEach((result) => {
+            response += `• **${result.id}** [${result.metrics?.cvssV31Severity || 'UNKNOWN'}]\n`;
+            response += `  ${result.description?.substring(0, 100) || 'N/A'}...\n\n`;
+          });
+          response += `Type a specific CVE ID (e.g., "CVE-2024-1234") for detailed analysis.`;
+          return response;
+        }
       }
     }
 
-    // Format search results for LLM
-    const resultsContext = searchResults
-      .map((r) => `- ${r.id} [${r.metrics?.cvssV31Severity}] CVSS: ${r.metrics?.cvssV31Score || 'N/A'}`)
-      .join('\n');
-
-    const history = this.getContextMessages(sessionId, 2);
-
+    // If no vulnerability results or general question, use LLM
     try {
-      const response = await this.llmService.generateSecurityResponse(
-        message,
-        `Matching CVEs found:\n${resultsContext}`,
-        history,
-      );
-      return response;
+      if (this.llmService.isConfigured()) {
+        const response = await this.llmService.generateSecurityResponse(
+          message,
+          hasVulnKeywords 
+            ? 'No specific CVE data matched your query. Provide general cybersecurity guidance relevant to the question.'
+            : 'Answer this general cybersecurity question.',
+          history,
+        );
+        return response;
+      } else {
+        // LLM not configured
+        return this.getHelpMessage();
+      }
     } catch (error) {
-      this.logger.error(`LLM generation failed, using template: ${error}`);
-      // Fallback to template
-      let response = `🔍 **Search Results for "${message}"**\n\n`;
-      searchResults.slice(0, 5).forEach((result) => {
-        response += `• **${result.id}** [${result.metrics?.cvssV31Severity || 'UNKNOWN'}]\n`;
-        response += `  ${result.description?.substring(0, 100) || 'N/A'}...\n\n`;
-      });
-      response += `Type a specific CVE ID for detailed analysis.`;
-      return response;
+      this.logger.error(`Error in general security query: ${error}`);
+      return `I'm having trouble processing that query. Here are some things you can try:\n\n• Search for a specific CVE ID: "CVE-2024-1234"\n• Ask about a product: "OpenSSL vulnerabilities"\n• Ask a security question: "Is this email phishing?"\n• Type "help" for more options`;
     }
   }
 
@@ -729,77 +747,78 @@ ${cveContext ? `\nTechnical details (for reference):\n${cveContext}` : ''}
   }
 
   private detectSecurityIntent(message: string): string {
-    const lowerMessage = message.toLowerCase();
+    const lowerMessage = message.toLowerCase().trim();
 
-    // CVE Search
-    if (lowerMessage.match(/cve-?\d{4}-?\d{4,}/) || lowerMessage.includes('cve')) {
+    // CVE Search - prioritize this check
+    if (/cve-?\d{4}-?\d{4,}/i.test(lowerMessage)) {
+      this.logger.debug(`Detected CVE search intent: ${message}`);
       return 'cveSearch';
     }
 
-    // Product Vulnerabilities
+    // Help
     if (
-      lowerMessage.includes('vulnerabilities') ||
-      lowerMessage.includes('vuln') ||
-      lowerMessage.includes('cves') ||
-      lowerMessage.match(/check\s+\w+|analyze\s+\w+/)
+      lowerMessage.includes('help') ||
+      lowerMessage.includes('how can') ||
+      lowerMessage.includes('what can you') ||
+      lowerMessage.includes('guide')
     ) {
-      return 'productVulnerability';
+      return 'help';
     }
 
-    // Threat Analysis
+    // Critical alerts - check before threat analysis
     if (
-      lowerMessage.includes('threat') ||
-      lowerMessage.includes('analyze') ||
-      lowerMessage.includes('landscape') ||
-      lowerMessage.includes('pattern')
+      lowerMessage.includes('critical') ||
+      (lowerMessage.includes('alert') && !lowerMessage.includes('exploit'))
     ) {
-      return 'threatAnalysis';
+      return 'criticalAlerts';
     }
 
     // Exploited vulnerabilities
     if (
       lowerMessage.includes('exploit') ||
-      lowerMessage.includes('actively exploited')
+      lowerMessage.includes('actively exploited') ||
+      lowerMessage.includes('being exploited')
     ) {
       return 'exploitedVulnerabilities';
     }
 
     // Recent vulnerabilities
     if (
-      lowerMessage.includes('recent') ||
-      lowerMessage.includes('new') ||
-      lowerMessage.includes('latest')
+      (lowerMessage.includes('recent') && lowerMessage.includes('vulnerabilities')) ||
+      lowerMessage.includes('new cves') ||
+      lowerMessage.includes('latest vulnerabilities') ||
+      lowerMessage.includes('recent cves')
     ) {
       return 'recentVulnerabilities';
+    }
+
+    // Threat Analysis - needs to be before product vulnerability to avoid overlap
+    if (
+      (lowerMessage.includes('threat') && (lowerMessage.includes('analysis') || lowerMessage.includes('landscape'))) ||
+      lowerMessage.includes('threat level') ||
+      lowerMessage.includes('threat assessment')
+    ) {
+      return 'threatAnalysis';
     }
 
     // Dependency scanning
     if (
       lowerMessage.includes('dependency') ||
       lowerMessage.includes('dependencies') ||
-      lowerMessage.includes('package') ||
-      lowerMessage.includes('npm') ||
-      lowerMessage.includes('pip')
+      lowerMessage.includes('package.json') ||
+      (lowerMessage.includes('scan') && (lowerMessage.includes('npm') || lowerMessage.includes('package')))
     ) {
       return 'dependencyScan';
     }
 
-    // Critical alerts
+    // Product Vulnerabilities - make this more specific
     if (
-      lowerMessage.includes('critical') ||
-      lowerMessage.includes('alert') ||
-      lowerMessage.includes('urgent')
+      (lowerMessage.includes('vulnerabilities') && !lowerMessage.includes('recent')) ||
+      lowerMessage.includes('CVEs for') ||
+      /^(check|find|get|list|show|search)\s+\w+\s+(vulnerabilities|cves|vulns)/.test(lowerMessage) ||
+      (/\w+\s+(vulnerabilities|cves|vulns|exploits)$/i.test(lowerMessage) && !lowerMessage.includes('known'))
     ) {
-      return 'criticalAlerts';
-    }
-
-    // Help
-    if (
-      lowerMessage.includes('help') ||
-      lowerMessage.includes('how') ||
-      lowerMessage.includes('what can you')
-    ) {
-      return 'help';
+      return 'productVulnerability';
     }
 
     return 'generalSearch';
